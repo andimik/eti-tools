@@ -50,6 +50,11 @@ int HandlePFPacket(edi_handler_t *h, uint8_t *edi_pkt, size_t pktsize)
     h->pf._Addr = unpack1bit(edi_pkt[index], 1);
     h->pf._Plen = read_16b(edi_pkt+index) & 0x3FFF; index += 2;
 
+	if (h->pf._Fcount == 0 || h->pf._Findex >= h->pf._Fcount || h->pf._Plen == 0) {
+		msg_Log("EDI-PF: invalid fragment metadata");
+		return -1;
+	}
+
     const size_t required_len = PFPACKET_HEADER_LEN + (h->pf._FEC ? 2 : 0) + (h->pf._Addr ? 4 : 0);
     if (pktsize < required_len) {
         return 0;

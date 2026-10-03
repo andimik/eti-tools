@@ -78,10 +78,11 @@ static int HandleAFPacket(edi_handler_t *h, uint8_t *edi_pkt, uint32_t pktsize)
     // read length from packet
     uint32_t taglength = read_32b(edi_pkt + 2);
     uint16_t seq = read_16b(edi_pkt + 6);
-    if (h->af.m_last_seq + 1 != seq) {
+	if (h->af.m_has_last_seq && h->af.m_last_seq + 1 != seq) {
     	msg_Log("EDI-AF: Packet sequence error");
     }
     h->af.m_last_seq = seq;
+	h->af.m_has_last_seq = true;
 
     bool has_crc = (edi_pkt[8] & 0x80) ? true : false;
     uint8_t major_revision = (edi_pkt[8] & 0x70) >> 4;
@@ -102,17 +103,13 @@ static int HandleAFPacket(edi_handler_t *h, uint8_t *edi_pkt, uint32_t pktsize)
     	return 0;
     }
 
-    if (!has_crc) {
-    	msg_Log("EDI-AF: packet not supported, has no CRC");
-        return -1;
-    }
-
-    //this is checked at the second time if PS is used
-    bool ok = checkCRC(edi_pkt, AFPACKET_HEADER_LEN + taglength + crclength);
-
-    if (!ok) {
-    	msg_Log("EDI-AF: Packet crc wrong pos:%u max:%u", AFPACKET_HEADER_LEN + taglength, pktsize);
-    	return -1;
+	if (has_crc) {
+		// This is checked at the second time if PS is used.
+		bool ok = checkCRC(edi_pkt, AFPACKET_HEADER_LEN + taglength + crclength);
+		if (!ok) {
+			msg_Log("EDI-AF: Packet crc wrong pos:%u max:%u", AFPACKET_HEADER_LEN + taglength, pktsize);
+			return -1;
+		}
     }
 
 

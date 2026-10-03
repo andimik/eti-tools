@@ -58,6 +58,7 @@ struct pfPkt {
 
 struct afPkt {
 	uint16_t m_last_seq;
+    bool m_has_last_seq;
 };
 
 struct afSingleCollector {

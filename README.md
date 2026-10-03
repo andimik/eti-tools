@@ -145,7 +145,8 @@ ETI edi2eti
 
 The tool is able to receive multicast data and save the converted stream into an ETI-file or publish it by ZeroMQ protcol. It is written to convert microwave links (WiFi or raw packet stream) to tcp-ZeroMQ stream useable by [EasyDABv2 module](http://tipok.org.ua/node/46). It can also be used for satellite feeds on Eutelsat 7° East.
 
-    usage: ./edi2eti [-o <outputfile|zeromq-uri>] [ip:port]
+        usage: ./edi2eti [-o <outputfile|zeromq-uri>] [ip:port]
+            ./edi2eti -i <edi-file> [-o <outputfile|zeromq-uri>]
 
 The output stream will be 6144-bytes aligned raw ETI-NI stream or local-port published ZeroMQ packet.
 
@@ -156,6 +157,10 @@ Sample of receiving multicast stream and convert it to ZeroMQ:
 Sample of receiving multicast stream and save it to file:
 
     ./edi2eti -o "out.eti"  232.20.10.1:12000
+
+To convert a recorded EDI file containing `fio_`/`afpf` records or concatenated AF/PF packets, use file input:
+
+    ./edi2eti -i recording.edi -o out.eti
     
 ETI fedi2eti
 ----------------

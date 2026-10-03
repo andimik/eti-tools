@@ -40,6 +40,10 @@ bool decode_starptr(edi_handler_t *h, const uint8_t *value, uint32_t bytelength)
 
 bool decode_deti(edi_handler_t *h, const uint8_t *value, uint32_t bytelength)
 {
+	if (bytelength < 6) {
+		msg_Log("EDI: deti tag is too short: %u", bytelength);
+		return false;
+	}
 
     /*
     uint16_t detiHeader = fct | (fcth << 8) | (rfudf << 13) | (ficf << 14) | (atstf << 15);
@@ -157,6 +161,10 @@ bool decode_estn(edi_handler_t *h, const uint8_t *value, uint32_t bytelength, ui
 {
     uint32_t sstc = read_24b(value);
 
+    if (n >= 64) {
+        msg_Log("EDI: Invalid est tag index: %u", n);
+        return false;
+    }
     if(n>64 || n==0) {
     	msg_Log("EDI: number of streams is invalid:%u", n);
     	return false;
@@ -180,7 +188,7 @@ bool decode_estn(edi_handler_t *h, const uint8_t *value, uint32_t bytelength, ui
     }
 
     stc->mst_size = bytelength - 3;
-    if(verbosity > 1)
+    if(verbosity > 4)
     	msg_Log("EDI: est%d length:%u", n, stc->mst_size);
     if(!stc->mst)
     	stc->mst=malloc(stc->mst_size);
@@ -204,13 +212,13 @@ bool decode_stardmy(edi_handler_t *h, uint8_t *tag_value, uint32_t taglength)
  *****************************************************************************/
 int decode_tagpacket(edi_handler_t *h, uint8_t *tag_pkt, uint32_t tagsize)
 {
-    size_t i, length = 0;
+    size_t i;
     bool success = true;
     h->eti.m_fc.nst=0;
-    for (i = 0; i + 8 < tagsize; i += 8 + length) {
+    for (i = 0; i + 8 <= tagsize;) {
         uint32_t tagId = read_32b(tag_pkt + i);
         uint32_t taglength = read_32b(tag_pkt + i + 4);
-        if(verbosity > 2)
+        if(verbosity > 4)
         	msg_Log("EDI: tag %08x (%c%c%c%c) len:%u",
         			tagId, tag_pkt[i], tag_pkt[i+1], tag_pkt[i+2],
 					isprint(tag_pkt[i+3]) ? tag_pkt[i+3] : (isprint(tag_pkt[i+3]+0x30) ? (tag_pkt[i+3]+0x30) : '.'),
@@ -223,7 +231,11 @@ int decode_tagpacket(edi_handler_t *h, uint8_t *tag_pkt, uint32_t tagsize)
         }
         taglength /= 8;
 
-        length = taglength;
+        if (taglength > tagsize - i - 8) {
+            msg_Log("EDI: Tag exceeds AF packet: %u > %u", taglength, tagsize - i - 8);
+            success = false;
+            break;
+        }
 
         uint8_t *tag_value = tag_pkt + i+8;
 
@@ -263,15 +275,17 @@ int decode_tagpacket(edi_handler_t *h, uint8_t *tag_pkt, uint32_t tagsize)
             tagsuccess = true;
         }
 		else {
-        	msg_Log("EDI: Unknown TAG %c%c%c%c", tag_pkt[i], tag_pkt[i+1], tag_pkt[i+2], tag_pkt[i+3]);
-            break;
+            if (verbosity > 2)
+                msg_Log("EDI: Unknown TAG %c%c%c%c", tag_pkt[i], tag_pkt[i+1], tag_pkt[i+2], tag_pkt[i+3]);
+            tagsuccess = true;
         }
 
         if (!tagsuccess) {
-        	msg_Log("EDI: Error decoding TAG %c%c%c%c",tag_pkt[i], tag_pkt[i+1], tag_pkt[i+2], tag_pkt[i+3]);
-            success = tagsuccess;
+            success = false;
             break;
         }
+
+        i += 8 + taglength;
     }
 
     return success;

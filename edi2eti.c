@@ -46,6 +46,7 @@ static void usage(char *name) {
 			"%s udp unicast/multicast EDI-to-ETI converter.\n"
 				"This is UDP unicast/multicast EDI-stream receiver that converts received stream to ETI-format %s.\n"
 				"Usage: %s [options] [address]:[port]\n"
+				"       %s [options] -i <edi-file>\n"
 				"-v, --verbose               : Show more info (default: no)\n"
 				"-q, --quiet                 : Minimum info (default: no)\n"
 				"-I, --interval <value>      : Application udp reception time in seconds. Exit after that. (default:run forever)\n"
@@ -57,7 +58,7 @@ static void usage(char *name) {
 #endif
 				"-a, --activity              : Display activity cursor (default: no)\n"
 				"-h, --help                  : Show this help\n"
-				"\n", name, VERSION_ID, name);
+				"\n", name, VERSION_ID, name, name);
 }
 
 static void build_info(char *name) {
@@ -96,6 +97,73 @@ void write_file(void *privData, void *etiData, int etiLen)
 		msg_Log("write:%u bytes to file", etiLen);
 	FILE *fh = (FILE *) privData;
 	fwrite(etiData, 1, etiLen, fh);
+}
+
+static int read_edi_file_packet(FILE *fh, uint8_t *buffer, size_t buffer_size, size_t *packet_size)
+{
+	uint8_t header[14];
+	size_t header_size = 8;
+	size_t packet_length;
+	size_t optional_length;
+	uint16_t payload_length;
+	uint32_t tag_length;
+	size_t outer_length;
+
+	outer_length = fread(header, 1, 8, fh);
+	if (outer_length == 0 && feof(fh))
+		return 0;
+	if (outer_length != 8)
+		return -1;
+
+	if (memcmp(header, "fio_", 4) == 0) {
+		tag_length = ((uint32_t)header[4] << 24) | ((uint32_t)header[5] << 16) |
+			((uint32_t)header[6] << 8) | header[7];
+		if (tag_length % 8 != 0 || tag_length / 8 > buffer_size)
+			return -1;
+		outer_length = tag_length / 8;
+		if (fread(buffer, 1, outer_length, fh) != outer_length)
+			return -1;
+		if (outer_length < 8 || memcmp(buffer, "afpf", 4) != 0)
+			return -1;
+
+		tag_length = ((uint32_t)buffer[4] << 24) | ((uint32_t)buffer[5] << 16) |
+			((uint32_t)buffer[6] << 8) | buffer[7];
+		if (tag_length % 8 != 0 || tag_length / 8 > outer_length - 8)
+			return -1;
+		memmove(buffer, buffer + 8, tag_length / 8);
+		*packet_size = tag_length / 8;
+		return 1;
+	}
+
+	if (header[0] == 'A' && header[1] == 'F') {
+		if (fread(header + 8, 1, 2, fh) != 2)
+			return -1;
+		header_size = 10;
+		packet_length = 12 + ((size_t)header[2] << 24) + ((size_t)header[3] << 16) +
+			((size_t)header[4] << 8) + header[5];
+	} else if (header[0] == 'P' && header[1] == 'F') {
+		if (fread(header + 8, 1, 6, fh) != 6)
+			return -1;
+		header_size = 14;
+		optional_length = (header[10] & 0x80 ? 2 : 0) + (header[10] & 0x40 ? 4 : 0);
+		payload_length = ((uint16_t)header[10] << 8 | header[11]) & 0x3fff;
+		if (payload_length == 0 ||
+			((size_t)header[7] << 16 | (size_t)header[8] << 8 | header[9]) == 0 ||
+			((size_t)header[4] << 16 | (size_t)header[5] << 8 | header[6]) >=
+			((size_t)header[7] << 16 | (size_t)header[8] << 8 | header[9]))
+			return -1;
+		packet_length = header_size + optional_length + payload_length;
+	} else {
+		return -1;
+	}
+
+	if (packet_length < header_size || packet_length > buffer_size)
+		return -1;
+	memcpy(buffer, header, header_size);
+	if (fread(buffer + header_size, 1, packet_length - header_size, fh) != packet_length - header_size)
+		return -1;
+	*packet_size = packet_length;
+	return 1;
 }
 
 
@@ -186,7 +254,9 @@ int main(int argc, char **argv) {
 	int ret, vertex=0, continous=1, timeout=0;
 	size_t recv_size = 0;
 	FILE *out_fh = stdout;
+	FILE *in_fh = NULL;
 	char *outpath = NULL;
+	char *inpath = NULL;
 	int port = DEFAULT_PORT;
 	int activity=0;
 	edi_handler_t *edi_p=NULL;
@@ -198,9 +268,10 @@ int main(int argc, char **argv) {
 	/******************************************************
 	 * Getopt
 	 ******************************************************/
-	const char short_options[] = "vLaqhI:o:";
+	const char short_options[] = "vLaqhI:o:i:";
 	const struct option long_options[] = {
 			{ "interval", optional_argument, NULL, 'I' },
+			{ "input", required_argument, NULL, 'i' },
 			{ "verbose", optional_argument, NULL, 'v' },
 			{ "quiet", optional_argument, NULL,	'q' },
 			{ "output", optional_argument, NULL, 'o' },
@@ -246,6 +317,10 @@ int main(int argc, char **argv) {
 			outpath = optarg;
 			break;
 
+		case 'i':
+			inpath = optarg;
+			break;
+
 		case 'h':
 			usage(argv[0]);
 			build_info(argv[0]);
@@ -257,10 +332,18 @@ int main(int argc, char **argv) {
 	if(verbosity > 0)
 		build_info(argv[0]);
 
-	if (argc <= optind) {
+	if (!inpath && argc <= optind) {
 		if (verbosity > 0)
 			msg_Log("need to specify ip:port a:%d, o:%d", argc, optind);
 		exit(-1);
+	}
+
+	if (inpath) {
+		in_fh = fopen(inpath, "rb");
+		if (!in_fh) {
+			msg_Log("can't open input file %s: %s", inpath, strerror(errno));
+			exit(-1);
+		}
 	}
 
 
@@ -293,19 +376,21 @@ int main(int argc, char **argv) {
 
 
 
-	char *pch = strtok(argv[optind], ":");
-	if (pch != NULL) {
-		if (strchr(pch, '.'))
-			ip = pch;
-		else
+	if (!inpath) {
+		char *pch = strtok(argv[optind], ":");
+		if (pch != NULL) {
+			if (strchr(pch, '.'))
+				ip = pch;
+			else
+				port = atoi(pch);
+		}
+
+		pch = strtok(NULL, " \n");
+		if (pch != NULL)
 			port = atoi(pch);
 	}
 
-	pch = strtok(NULL, " \n");
-	if (pch != NULL)
-		port = atoi(pch);
-
-	if (verbosity > 0)
+	if (!inpath && verbosity > 0)
 		msg_Log("receiving from: %s:%d...", ip, port);
 
 	uint8_t *buff;
@@ -319,12 +404,14 @@ int main(int argc, char **argv) {
 		alarm(timeout);
 	}
 
-	buff = malloc(8192);
-	sock = input_init_udp(ip, port);
-	if (!sock) {
-		if (verbosity > 0)
-			msg_Log("init socket failed");
-		exit(-1);
+	buff = malloc(65536);
+	if (!inpath) {
+		sock = input_init_udp(ip, port);
+		if (!sock) {
+			if (verbosity > 0)
+				msg_Log("init socket failed");
+			exit(-1);
+		}
 	}
 
 
@@ -339,10 +426,19 @@ int main(int argc, char **argv) {
 
 			do {
 				recv_size = 0;
-				//wait 500ms to receive buffer
-				ret = udp_read_timeout(sock, buff, &recv_size, 500);
+				if (inpath) {
+					ret = read_edi_file_packet(in_fh, buff, 65536, &recv_size);
+					if (ret == 0)
+						Interrupted = 1;
+				} else {
+					//wait 500ms to receive buffer
+					ret = udp_read_timeout(sock, buff, &recv_size, 500);
+				}
 
-				if(ret == -ETIMEDOUT) {
+				if (inpath && ret < 0) {
+					msg_Log("invalid or truncated EDI packet in input file");
+					Interrupted = 1;
+				} else if(ret == -ETIMEDOUT) {
 					if (continous) {
 						continous=0;
 						if(verbosity > 0)
@@ -372,7 +468,10 @@ int main(int argc, char **argv) {
 		fclose(out_fh);
 
 	closeEDIHandle(edi_p);
-	close(sock);
+	if (in_fh)
+		fclose(in_fh);
+	if (sock >= 0)
+		close(sock);
 	sock = 0;
 	free(buff);
 
